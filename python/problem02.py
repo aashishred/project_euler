@@ -47,15 +47,36 @@ class Solution2:
         return self.answer
 
 
+class Solution3:
+    #  Consider: which Fibonacci numbers are even?
+    #  Fibs: 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610
+    #  Evens: 2, 8, 34, 144, 610
+    #  i.e., multiply by 4, and then add the previous even term.
+
+    def __init__(self):
+        self.answer = 2  # Initialise answer variable to start at 2.
+
+    def solve(self):
+        previous = 2
+        current = 8
+
+        while current < target:
+            self.answer += current
+            previous, current = current, (4 * current) + previous
+            
+        return self.answer
+
+
 if __name__ == "__main__":
     tracemalloc.start()  # Start memory allocation trace
     start = time.time()  # Start timer
 
-    solution = Solution1()  # Change Solution1 to Solution2 etc., to run a different solution
+    solution = Solution3()  # Change Solution1 to Solution2 etc., to run a different solution
     answer = solution.solve()  # Runs the solution
 
     print("Total elapsed time:", time.time() - start)  # Prints total time taken to run the solve() method
-    print("Memory Usage\tCurrent:", tracemalloc.get_traced_memory()[0], "\tPeak:", tracemalloc.get_traced_memory()[1])  # Prints the current and peak memory usage in bytes of the traced Python objects
+    print("Memory Usage\tCurrent:", tracemalloc.get_traced_memory()[0], "\tPeak:", tracemalloc.get_traced_memory()[
+        1])  # Prints the current and peak memory usage in bytes of the traced Python objects
 
     tracemalloc.stop()  # Stops the memory allocation trace
 
