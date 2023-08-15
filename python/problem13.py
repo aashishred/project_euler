@@ -10,7 +10,7 @@ target = 10
 class Solution1:
     def __init__(self):
         self.answer = 0  # Initialise answer variable to 0
-        self.numbers = open("problem13.txt", "r").read().splitlines() # problem13.txt is a copy & paste of all the numbers on different lines, as shown in the problems
+        self.numbers = open("problem13.txt", "r").read().splitlines()  # problem13.txt is a copy & paste of all the numbers on different lines, as shown in the problems
 
     def solve(self):
         digits = sum(int(x) for x in self.numbers)
