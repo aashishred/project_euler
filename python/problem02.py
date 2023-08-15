@@ -2,6 +2,8 @@ import time, tracemalloc  # Used for efficiency tracking of elapsed time and mem
 import pyperclip  # Used to automatically copy the answer to clipboard
 import os  # Used to print the name of the problem (i.e., file name)
 
+from functools import lru_cache
+
 # Even Fibonacci Numbers
 target = 4_000_000
 
@@ -23,9 +25,6 @@ class Solution1:
                     self.answer += y
                 y += x
         return self.answer
-
-
-from functools import lru_cache
 
 
 class Solution2:
