@@ -1,1 +1,1 @@
-temporary Pangram Llama3 strong-check smoke test v2
+temporary Pangram Llama3 strong-check smoke test v3
