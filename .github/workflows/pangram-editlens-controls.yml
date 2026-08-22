@@ -1,0 +1,47 @@
+name: Temporary EditLens sanity controls
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  controls:
+    if: ${{ github.head_ref == 'chatgpt-pangram-check-20260822' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install runtime
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          npm init -y >/dev/null 2>&1
+          npm install --silent @huggingface/transformers
+      - name: Run sanity controls
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/controls.mjs" <<'JS'
+          import { pipeline } from '@huggingface/transformers';
+          const pipe = await pipeline('text-classification','benreeve/editlens-roberta-large-onnx-int8',{device:'cpu',model_file_name:'model_quantized'});
+          const samples = {
+            gettysburg: `Four score and seven years ago our fathers brought forth on this continent, a new nation, conceived in Liberty, and dedicated to the proposition that all men are created equal. Now we are engaged in a great civil war, testing whether that nation, or any nation so conceived and so dedicated, can long endure. We are met on a great battle-field of that war. We have come to dedicate a portion of that field, as a final resting place for those who here gave their lives that that nation might live. It is altogether fitting and proper that we should do this. But, in a larger sense, we can not dedicate—we can not consecrate—we can not hallow—this ground. The brave men, living and dead, who struggled here, have consecrated it, far above our poor power to add or detract. The world will little note, nor long remember what we say here, but it can never forget what they did here. It is for us the living, rather, to be dedicated here to the unfinished work which they who fought here have thus far so nobly advanced. It is rather for us to be here dedicated to the great task remaining before us—that from these honored dead we take increased devotion to that cause for which they gave the last full measure of devotion—that we here highly resolve that these dead shall not have died in vain—that this nation, under God, shall have a new birth of freedom—and that government of the people, by the people, for the people, shall not perish from the earth.`,
+            declaration: `We hold these truths to be self-evident, that all men are created equal, that they are endowed by their Creator with certain unalienable Rights, that among these are Life, Liberty and the pursuit of Happiness. That to secure these rights, Governments are instituted among Men, deriving their just powers from the consent of the governed, That whenever any Form of Government becomes destructive of these ends, it is the Right of the People to alter or to abolish it, and to institute new Government, laying its foundation on such principles and organizing its powers in such form, as to them shall seem most likely to effect their Safety and Happiness. Prudence, indeed, will dictate that Governments long established should not be changed for light and transient causes; and accordingly all experience hath shewn, that mankind are more disposed to suffer, while evils are sufferable, than to right themselves by abolishing the forms to which they are accustomed.`,
+            ai_style: `Artificial intelligence is transforming the way organizations approach decision-making, collaboration, and long-term planning. At its core, the technology enables teams to process large amounts of information, identify meaningful patterns, and generate useful recommendations in less time. However, successful adoption requires more than simply deploying a powerful model. Organizations must also establish clear goals, define appropriate safeguards, and create processes for human review. A thoughtful implementation begins by identifying tasks where automation can provide measurable value while preserving accountability for consequential decisions. Teams should evaluate model outputs against relevant benchmarks, document known limitations, and monitor performance over time. They should also consider how users will interact with the system, because interface design can strongly influence whether recommendations are understood as suggestions or treated as authoritative conclusions. Training and communication are equally important. Employees need to know what the system can do, where it may fail, and when to escalate a decision to a human expert. By combining technical capability with governance, transparency, and continuous evaluation, organizations can capture the benefits of artificial intelligence while reducing unnecessary risks. The most effective strategy is therefore not to replace human judgment wholesale, but to design systems in which people and machines contribute their respective strengths toward clearly defined objectives.`
+          };
+          const names=['Human-written','Lightly AI-edited','Heavily AI-edited','Fully AI-generated'];
+          for (const [name,text] of Object.entries(samples)) {
+            const raw=await pipe(text,{top_k:null,truncation:true,max_length:512});
+            const arr=Array.isArray(raw[0])?raw[0]:raw;
+            const p=[0,0,0,0];
+            for(const x of arr){const m=String(x.label).match(/(?:LABEL_)?(\d+)/); if(m)p[Number(m[1])]=Number(x.score);}
+            const s=p.reduce((a,b)=>a+b,0); for(let i=0;i<4;i++)p[i]/=s;
+            const score=(p[1]+2*p[2]+3*p[3])/3;
+            const argmax=p.indexOf(Math.max(...p));
+            console.log('CONTROL',JSON.stringify({name,score,bucket:names[argmax],probs:p}));
+          }
+          JS
+          cd "$RUNNER_TEMP"
+          node controls.mjs
