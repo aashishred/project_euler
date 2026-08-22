@@ -1,1 +1,1 @@
-temporary Pangram strong-check trigger v6 — run original and 2026-v3
+temporary Pangram strong-check trigger v7 — fixed 2026-v3
