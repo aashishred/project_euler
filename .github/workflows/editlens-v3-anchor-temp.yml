@@ -1,0 +1,85 @@
+name: Temporary EditLens v3 4B anchor check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  v3_anchor:
+    if: ${{ github.head_ref == 'chatgpt-pangram-llama3-check-20260822' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .pangram-qwen3-key
+          key: pangram-qwen3-ephemeral-v1-${{ github.head_ref }}
+      - name: Prepare
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/share/boost || true
+          sudo apt-get clean || true
+          python -m pip install --no-cache-dir -q 'transformers>=4.51,<5' accelerate safetensors emoji huggingface_hub protobuf
+      - name: Decrypt
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d pangram_qwen3_payload/key.enc.b64 > "$RUNNER_TEMP/key.enc"
+          openssl pkeyutl -decrypt -inkey .pangram-qwen3-key/private.pem -in "$RUNNER_TEMP/key.enc" -out "$RUNNER_TEMP/key.hex"
+          for s in essay1 essay2; do
+            cat pangram_qwen3_payload/${s}.enc.b64.part* > "$RUNNER_TEMP/${s}.enc.b64"
+            base64 -d "$RUNNER_TEMP/${s}.enc.b64" > "$RUNNER_TEMP/${s}.enc"
+            openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$RUNNER_TEMP/key.hex" -in "$RUNNER_TEMP/${s}.enc" -out "$RUNNER_TEMP/${s}.txt.gz"
+            gzip -dc "$RUNNER_TEMP/${s}.txt.gz" > "$RUNNER_TEMP/${s}.txt"
+          done
+      - name: Score v3 anchors
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/v3a.py" <<'PY'
+          import json, os, re
+          from pathlib import Path
+          import torch, torch.nn as nn, emoji
+          from transformers import AutoModelForSequenceClassification, AutoTokenizer
+          from huggingface_hub import hf_hub_download
+          from safetensors import safe_open
+          MODEL='DarrenJiaImbue/editlens-qwen3-4b-merged-v3'; TOKENIZER='Qwen/Qwen3-4B'; K=4; W=300; MAXLEN=768
+          names=['Human','Light AI edit','Heavy AI edit','AI generated']
+          class NormedLinear(nn.Module):
+              def __init__(self,h,n,device=None,dtype=None): super().__init__(); self.norm=nn.LayerNorm(h,device=device,dtype=dtype); self.linear=nn.Linear(h,n,bias=False,device=device,dtype=dtype)
+              def forward(self,x): return self.linear(self.norm(x))
+          def clean(t):
+              t=emoji.demojize(t)
+              if '</think>' in t:t=t.split('</think>',1)[1]
+              return re.sub(r'\s+',' ',t.lower()).strip()
+          tok=AutoTokenizer.from_pretrained(TOKENIZER); tok.pad_token=tok.pad_token or tok.eos_token; tok.padding_side='left'
+          m=AutoModelForSequenceClassification.from_pretrained(MODEL,dtype=torch.bfloat16,low_cpu_mem_usage=True,attn_implementation='eager')
+          dev=next(m.parameters()).device; dt=next(m.parameters()).dtype
+          m.score=NormedLinear(m.config.hidden_size,m.config.num_labels,device=dev,dtype=dt)
+          sf=hf_hub_download(MODEL,'model.safetensors')
+          with safe_open(sf,framework='pt') as f:
+              m.score.norm.weight.data.copy_(f.get_tensor('score.norm.weight').to(dtype=dt)); m.score.norm.bias.data.copy_(f.get_tensor('score.norm.bias').to(dtype=dt)); m.score.linear.weight.data.copy_(f.get_tensor('score.linear.weight').to(dtype=dt))
+          m.config.pad_token_id=tok.pad_token_id; m.eval(); torch.set_num_threads(max(1,min(8,os.cpu_count() or 1)))
+          def one(t):
+              e=tok(clean(t),return_tensors='pt',truncation=True,max_length=MAXLEN)
+              with torch.inference_mode():p=torch.softmax(m(**e).logits[0].float(),-1).cpu().tolist()
+              b=max(range(4),key=lambda i:p[i]); return {'score':sum(i*p[i] for i in range(4))/3,'bucket':b,'bucket_name':names[b],'probs':p}
+          controls={'gettysburg':'Four score and seven years ago our fathers brought forth on this continent, a new nation, conceived in Liberty, and dedicated to the proposition that all men are created equal. Now we are engaged in a great civil war, testing whether that nation, or any nation so conceived and so dedicated, can long endure. We are met on a great battle-field of that war.','ai_style':'Artificial intelligence is transforming the way organizations approach decision-making, collaboration, and long-term planning. At its core, the technology enables teams to process large amounts of information, identify meaningful patterns, and generate useful recommendations in less time. However, successful adoption requires more than simply deploying a powerful model. Organizations must also establish clear goals, define appropriate safeguards, and create processes for human review.'}
+          print('---V3ANCHOR-CONTROLS---')
+          for k,v in controls.items():print(json.dumps({'name':k,**one(v)}),flush=True)
+          docs=[]
+          for fn,label in [('essay1.txt','closed_tribunal'),('essay2.txt','liberal_defence_markets')]:
+              ws=clean(Path(os.environ['RUNNER_TEMP'],fn).read_text()).split(); mx=max(0,len(ws)-W); starts=sorted(set(round(i*mx/(K-1)) for i in range(K))); rows=[]
+              for i,s in enumerate(starts,1):
+                  r=one(' '.join(ws[s:s+W])); r.update(anchor=i,start_word=s+1,end_word=min(len(ws),s+W)); rows.append(r); print(f'V3ANCHOR {label} {i} score={r["score"]:.6f} bucket={r["bucket"]}',flush=True)
+              docs.append({'label':label,'mean_score':sum(r['score'] for r in rows)/len(rows),'bucket_counts':{n:sum(r['bucket_name']==n for r in rows) for n in names},'rows':rows})
+          print('---V3ANCHOR-RESULT-BEGIN---');print(json.dumps({'model':MODEL,'documents':docs},indent=2));print('---V3ANCHOR-RESULT-END---')
+          PY
+          python "$RUNNER_TEMP/v3a.py"
+      - name: Wipe
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP"/essay1* "$RUNNER_TEMP"/essay2* "$RUNNER_TEMP"/key.* "$RUNNER_TEMP"/v3a.py || true
