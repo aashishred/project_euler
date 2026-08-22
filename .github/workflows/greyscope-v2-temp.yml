@@ -26,7 +26,6 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: greyscope-v2-qwen35-4b-bf16-20260822-v1
-          save-always: true
 
       - name: Prepare runner
         shell: bash
@@ -34,7 +33,7 @@ jobs:
           set -euo pipefail
           sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/share/boost || true
           sudo apt-get clean || true
-          python -m pip install --no-cache-dir -q 'git+https://github.com/yaoandy107/greyscope.git@e052f07b5e5bddacce41fe4d5fcc3250081385da' accelerate safetensors hf_xet protobuf
+          python -m pip install --no-cache-dir -q 'git+https://github.com/yaoandy107/greyscope.git@e052f07b5e5bddacce41fe4d5fcc3250081385da' accelerate safetensors hf_xet protobuf scipy
           df -h /
 
       - name: Decrypt essays only inside runner
