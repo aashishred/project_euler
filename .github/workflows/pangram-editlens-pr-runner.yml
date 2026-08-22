@@ -31,9 +31,6 @@ jobs:
             openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out .pangram-key/private.pem
           fi
           openssl pkey -in .pangram-key/private.pem -pubout -out .pangram-key/public.pem
-          echo '---PUBLIC-KEY-BEGIN---'
-          cat .pangram-key/public.pem
-          echo '---PUBLIC-KEY-END---'
 
       - name: Decrypt manuscript in runner only
         if: ${{ hashFiles('pangram_payload/manuscript.enc.b64.part00') != '' && hashFiles('pangram_payload/key.enc.b64') != '' }}
@@ -81,7 +78,7 @@ jobs:
           const classifier = await pipeline(
             'text-classification',
             'benreeve/editlens-roberta-large-onnx-int8',
-            { device: 'cpu' }
+            { device: 'cpu', model_file_name: 'model_quantized' }
           );
 
           const names = ['Human-written', 'Lightly AI-edited', 'Heavily AI-edited', 'Fully AI-generated'];
