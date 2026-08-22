@@ -36,18 +36,20 @@ jobs:
           echo '---PUBLIC-KEY-END---'
 
       - name: Decrypt manuscript in runner only
-        if: ${{ hashFiles('pangram_payload/manuscript.enc.b64') != '' && hashFiles('pangram_payload/key.enc.b64') != '' }}
+        if: ${{ hashFiles('pangram_payload/manuscript.enc.b64.part00') != '' && hashFiles('pangram_payload/key.enc.b64') != '' }}
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d pangram_payload/manuscript.enc.b64 > "$RUNNER_TEMP/manuscript.enc"
+          cat pangram_payload/manuscript.enc.b64.part* > "$RUNNER_TEMP/manuscript.enc.b64"
+          base64 -d "$RUNNER_TEMP/manuscript.enc.b64" > "$RUNNER_TEMP/manuscript.enc"
           base64 -d pangram_payload/key.enc.b64 > "$RUNNER_TEMP/key.enc"
           openssl pkeyutl -decrypt -inkey .pangram-key/private.pem -in "$RUNNER_TEMP/key.enc" -out "$RUNNER_TEMP/key.hex"
-          openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$RUNNER_TEMP/key.hex" -in "$RUNNER_TEMP/manuscript.enc" -out "$RUNNER_TEMP/manuscript.txt"
+          openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$RUNNER_TEMP/key.hex" -in "$RUNNER_TEMP/manuscript.enc" -out "$RUNNER_TEMP/manuscript.txt.gz"
+          gzip -dc "$RUNNER_TEMP/manuscript.txt.gz" > "$RUNNER_TEMP/manuscript.txt"
           chmod 600 "$RUNNER_TEMP/manuscript.txt" "$RUNNER_TEMP/key.hex"
 
       - name: Install local inference runtime
-        if: ${{ hashFiles('pangram_payload/manuscript.enc.b64') != '' && hashFiles('pangram_payload/key.enc.b64') != '' }}
+        if: ${{ hashFiles('pangram_payload/manuscript.enc.b64.part00') != '' && hashFiles('pangram_payload/key.enc.b64') != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -56,7 +58,7 @@ jobs:
           npm install --silent @huggingface/transformers
 
       - name: Run Pangram-derived EditLens detector over manuscript
-        if: ${{ hashFiles('pangram_payload/manuscript.enc.b64') != '' && hashFiles('pangram_payload/key.enc.b64') != '' }}
+        if: ${{ hashFiles('pangram_payload/manuscript.enc.b64.part00') != '' && hashFiles('pangram_payload/key.enc.b64') != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -132,4 +134,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/manuscript.txt" "$RUNNER_TEMP/key.hex" "$RUNNER_TEMP/manuscript.enc" "$RUNNER_TEMP/key.enc" || true
+          rm -f "$RUNNER_TEMP/manuscript.txt" "$RUNNER_TEMP/manuscript.txt.gz" "$RUNNER_TEMP/key.hex" "$RUNNER_TEMP/manuscript.enc" "$RUNNER_TEMP/manuscript.enc.b64" "$RUNNER_TEMP/key.enc" || true
