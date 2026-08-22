@@ -1,0 +1,62 @@
+name: Temporary Greyscope v2 4B anchor check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  greyscope_anchor:
+    if: ${{ github.head_ref == 'chatgpt-pangram-llama3-check-20260822' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .pangram-qwen3-key
+          key: pangram-qwen3-ephemeral-v1-${{ github.head_ref }}
+      - name: Prepare
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/share/boost || true
+          sudo apt-get clean || true
+          python -m pip install --no-cache-dir -q 'git+https://github.com/yaoandy107/greyscope.git@e052f07b5e5bddacce41fe4d5fcc3250081385da' accelerate safetensors hf_xet protobuf scipy
+      - name: Decrypt
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d pangram_qwen3_payload/key.enc.b64 > "$RUNNER_TEMP/key.enc"
+          openssl pkeyutl -decrypt -inkey .pangram-qwen3-key/private.pem -in "$RUNNER_TEMP/key.enc" -out "$RUNNER_TEMP/key.hex"
+          for s in essay1 essay2; do
+            cat pangram_qwen3_payload/${s}.enc.b64.part* > "$RUNNER_TEMP/${s}.enc.b64"
+            base64 -d "$RUNNER_TEMP/${s}.enc.b64" > "$RUNNER_TEMP/${s}.enc"
+            openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$RUNNER_TEMP/key.hex" -in "$RUNNER_TEMP/${s}.enc" -out "$RUNNER_TEMP/${s}.txt.gz"
+            gzip -dc "$RUNNER_TEMP/${s}.txt.gz" > "$RUNNER_TEMP/${s}.txt"
+          done
+      - name: Score three anchors per essay with official decoder
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/gsa.py" <<'PY'
+          import json, os, re
+          from pathlib import Path
+          from greyscope.inference import detect
+          K=3; W=400
+          controls={'gettysburg':'Four score and seven years ago our fathers brought forth on this continent, a new nation, conceived in Liberty, and dedicated to the proposition that all men are created equal. Now we are engaged in a great civil war, testing whether that nation, or any nation so conceived and so dedicated, can long endure. We are met on a great battle-field of that war.','ai_style':'Artificial intelligence is transforming the way organizations approach decision-making, collaboration, and long-term planning. At its core, the technology enables teams to process large amounts of information, identify meaningful patterns, and generate useful recommendations in less time. However, successful adoption requires more than simply deploying a powerful model. Organizations must also establish clear goals, define appropriate safeguards, and create processes for human review.'}
+          print('---GSANCHOR-CONTROLS---')
+          for k,v in controls.items(): print(json.dumps({'name':k,**detect(v,mode='ternary',model='bf16',device='cpu')}),flush=True)
+          docs=[]
+          for fn,label in [('essay1.txt','closed_tribunal'),('essay2.txt','liberal_defence_markets')]:
+              text=Path(os.environ['RUNNER_TEMP'],fn).read_text(); ws=re.sub(r'\s+',' ',text).strip().split(); mx=max(0,len(ws)-W); starts=sorted(set(round(i*mx/(K-1)) for i in range(K))); rows=[]
+              for i,s in enumerate(starts,1):
+                  r=detect(' '.join(ws[s:s+W]),mode='ternary',model='bf16',device='cpu'); rows.append({'anchor':i,'start_word':s+1,'end_word':min(len(ws),s+W),**r}); print(f'GSANCHOR {label} {i} score={r["ai_involvement"]:.6f} label={r["label"]}',flush=True)
+              docs.append({'label':label,'mean_score':sum(r['ai_involvement'] for r in rows)/len(rows),'label_counts':{x:sum(r['label']==x for r in rows) for x in ['human','AI-edited','AI-generated']},'rows':rows})
+          print('---GSANCHOR-RESULT-BEGIN---');print(json.dumps({'model':'yaoandy107/greyscope-v2-qwen3.5-4b','decoder':'official calibrated CORN','documents':docs},indent=2));print('---GSANCHOR-RESULT-END---')
+          PY
+          python "$RUNNER_TEMP/gsa.py"
+      - name: Wipe
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP"/essay1* "$RUNNER_TEMP"/essay2* "$RUNNER_TEMP"/key.* "$RUNNER_TEMP"/gsa.py || true
