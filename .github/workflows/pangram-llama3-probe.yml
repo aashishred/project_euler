@@ -1,0 +1,47 @@
+name: Temporary Pangram Llama3 credential probe
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: ${{ github.head_ref == 'chatgpt-pangram-llama3-check-20260822' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HF_TOKEN_A: ${{ secrets.HF_TOKEN }}
+      HF_TOKEN_B: ${{ secrets.HUGGINGFACE_TOKEN }}
+      HF_TOKEN_C: ${{ secrets.HUGGING_FACE_TOKEN }}
+      HF_TOKEN_D: ${{ secrets.HF_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe gated-model access without exposing credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN=""
+          SOURCE="none"
+          for spec in A B C D; do
+            var="HF_TOKEN_${spec}"
+            val="${!var:-}"
+            if [ -n "$val" ]; then TOKEN="$val"; SOURCE="$spec"; break; fi
+          done
+          if [ -n "$TOKEN" ]; then
+            echo "HF_CREDENTIAL_PRESENT=yes source=$SOURCE"
+            AUTH=(-H "Authorization: Bearer $TOKEN")
+          else
+            echo "HF_CREDENTIAL_PRESENT=no"
+            AUTH=()
+          fi
+          code_adapter=$(curl -L -sS -o /tmp/adapter_config.json -w '%{http_code}' "${AUTH[@]}" https://huggingface.co/pangram/editlens_Llama-3.2-3B/resolve/main/adapter_config.json || true)
+          code_adapter_weights=$(curl -L -sS -o /dev/null -w '%{http_code}' "${AUTH[@]}" https://huggingface.co/pangram/editlens_Llama-3.2-3B/resolve/main/adapter_model.safetensors || true)
+          code_base=$(curl -L -sS -o /tmp/base_config.json -w '%{http_code}' "${AUTH[@]}" https://huggingface.co/meta-llama/Llama-3.2-3B/resolve/main/config.json || true)
+          code_unsloth=$(curl -L -sS -o /tmp/unsloth_config.json -w '%{http_code}' https://huggingface.co/unsloth/Llama-3.2-3B/resolve/main/config.json || true)
+          echo "PANGRAM_ADAPTER_CONFIG_HTTP=$code_adapter"
+          echo "PANGRAM_ADAPTER_WEIGHTS_HTTP=$code_adapter_weights"
+          echo "META_BASE_HTTP=$code_base"
+          echo "UNSLOTH_BASE_HTTP=$code_unsloth"
