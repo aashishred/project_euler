@@ -1,0 +1,87 @@
+name: Temporary EditLens Qwen3-4B fast anchor
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  anchor:
+    if: ${{ github.head_ref == 'chatgpt-pangram-llama3-check-20260822' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .pangram-qwen3-key
+          key: pangram-qwen3-ephemeral-v1-${{ github.head_ref }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: editlens-qwen3-4b-public-v1
+      - name: Prepare
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/share/boost || true
+          sudo apt-get clean || true
+          python -m pip install --no-cache-dir -q 'transformers>=4.51,<5' 'peft>=0.18' accelerate safetensors emoji huggingface_hub
+      - name: Decrypt in runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d pangram_qwen3_payload/key.enc.b64 > "$RUNNER_TEMP/key.enc"
+          openssl pkeyutl -decrypt -inkey .pangram-qwen3-key/private.pem -in "$RUNNER_TEMP/key.enc" -out "$RUNNER_TEMP/key.hex"
+          for s in essay1 essay2; do
+            cat pangram_qwen3_payload/${s}.enc.b64.part* > "$RUNNER_TEMP/${s}.enc.b64"
+            base64 -d "$RUNNER_TEMP/${s}.enc.b64" > "$RUNNER_TEMP/${s}.enc"
+            openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$RUNNER_TEMP/key.hex" -in "$RUNNER_TEMP/${s}.enc" -out "$RUNNER_TEMP/${s}.txt.gz"
+            gzip -dc "$RUNNER_TEMP/${s}.txt.gz" > "$RUNNER_TEMP/${s}.txt"
+          done
+      - name: Score 6 evenly-spaced anchors per essay
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/anchor.py" <<'PY'
+          import json, os, re
+          from pathlib import Path
+          import torch, torch.nn as nn, emoji
+          from transformers import AutoModelForSequenceClassification, AutoTokenizer
+          from peft import PeftModel
+
+          BASE='Qwen/Qwen3-4B'; ADAPTER='DarrenJiaImbue/editlens-qwen3-4b'; N=4; MAXLEN=768; W=300; K=6
+          names=['Human','Light AI edit','Heavy AI edit','AI generated']
+          class NormedLinear(nn.Module):
+              def __init__(self,h,n,device=None,dtype=None):
+                  super().__init__(); self.norm=nn.LayerNorm(h,device=device,dtype=dtype); self.linear=nn.Linear(h,n,bias=False,device=device,dtype=dtype)
+              def forward(self,x): return self.linear(self.norm(x))
+          def clean(t): return re.sub(r'\s+',' ',emoji.demojize(t).lower()).strip()
+          tok=AutoTokenizer.from_pretrained(BASE); tok.pad_token=tok.pad_token or tok.eos_token; tok.padding_side='left'
+          base=AutoModelForSequenceClassification.from_pretrained(BASE,num_labels=N,dtype=torch.bfloat16,low_cpu_mem_usage=True,attn_implementation='eager')
+          base.config.pad_token_id=tok.pad_token_id
+          if isinstance(base.score,nn.Linear): base.score=NormedLinear(base.config.hidden_size,N,device=next(base.parameters()).device,dtype=next(base.parameters()).dtype)
+          model=PeftModel.from_pretrained(base,ADAPTER); model.eval(); torch.set_num_threads(max(1,min(4,os.cpu_count() or 1)))
+          def score(t):
+              e=tok(clean(t),return_tensors='pt',truncation=True,max_length=MAXLEN)
+              with torch.inference_mode(): p=torch.softmax(model(**e).logits[0].float(),-1).cpu().tolist()
+              b=max(range(4),key=lambda i:p[i]); return {'score':sum(i*p[i] for i in range(4))/3,'bucket':b,'bucket_name':names[b],'probs':p,'tokens':int(e.input_ids.shape[1])}
+          controls={'gettysburg':'Four score and seven years ago our fathers brought forth on this continent, a new nation, conceived in Liberty, and dedicated to the proposition that all men are created equal. Now we are engaged in a great civil war, testing whether that nation, or any nation so conceived and so dedicated, can long endure. We are met on a great battle-field of that war. We have come to dedicate a portion of that field, as a final resting place for those who here gave their lives that that nation might live. It is altogether fitting and proper that we should do this.','ai_style':'Artificial intelligence is transforming the way organizations approach decision-making, collaboration, and long-term planning. At its core, the technology enables teams to process large amounts of information, identify meaningful patterns, and generate useful recommendations in less time. However, successful adoption requires more than simply deploying a powerful model. Organizations must also establish clear goals, define appropriate safeguards, and create processes for human review. A thoughtful implementation begins by identifying tasks where automation can provide measurable value while preserving accountability for consequential decisions.'}
+          print('---ANCHOR-CONTROLS-BEGIN---')
+          for k,v in controls.items(): print(json.dumps({'name':k,**score(v)}),flush=True)
+          print('---ANCHOR-CONTROLS-END---')
+          out=[]
+          for fn,label in [('essay1.txt','closed_tribunal'),('essay2.txt','liberal_defence_markets')]:
+              ws=clean(Path(os.environ['RUNNER_TEMP'],fn).read_text()).split(); maxstart=max(0,len(ws)-W)
+              starts=sorted(set(round(i*maxstart/(K-1)) for i in range(K))) if K>1 else [0]
+              rows=[]
+              for j,s in enumerate(starts,1):
+                  e=min(len(ws),s+W); r=score(' '.join(ws[s:e])); r.update(anchor=j,start_word=s+1,end_word=e); rows.append(r); print(f'ANCHOR {label} {j}/{len(starts)} score={r["score"]:.6f} bucket={r["bucket"]}',flush=True)
+              out.append({'label':label,'words':len(ws),'anchors':rows,'mean_score':sum(r['score'] for r in rows)/len(rows),'bucket_counts':{n:sum(r['bucket_name']==n for r in rows) for n in names}})
+          print('---ANCHOR-RESULT-BEGIN---'); print(json.dumps({'model':ADAPTER,'documents':out},indent=2)); print('---ANCHOR-RESULT-END---')
+          PY
+          python "$RUNNER_TEMP/anchor.py"
+      - name: Wipe
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP"/essay1* "$RUNNER_TEMP"/essay2* "$RUNNER_TEMP"/key.* "$RUNNER_TEMP"/anchor.py || true
