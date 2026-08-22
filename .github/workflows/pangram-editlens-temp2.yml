@@ -1,0 +1,108 @@
+name: Temporary Pangram EditLens check 2
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  editlens:
+    if: ${{ github.head_ref == 'chatgpt-pangram-check-20260822-b' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore ephemeral private key
+        uses: actions/cache@v4
+        with:
+          path: .pangram-key
+          key: pangram-editlens-ephemeral-v4-${{ github.head_ref }}
+
+      - name: Generate or recover keypair
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .pangram-key
+          if [ ! -s .pangram-key/private.pem ]; then
+            openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out .pangram-key/private.pem
+          fi
+          openssl pkey -in .pangram-key/private.pem -pubout -out .pangram-key/public.pem
+          echo '---PUBLIC-KEY-BEGIN---'
+          cat .pangram-key/public.pem
+          echo '---PUBLIC-KEY-END---'
+
+      - name: Decrypt manuscript in runner only
+        if: ${{ hashFiles('pangram_payload2/manuscript.enc.b64.part00') != '' && hashFiles('pangram_payload2/key.enc.b64') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat pangram_payload2/manuscript.enc.b64.part* > "$RUNNER_TEMP/manuscript.enc.b64"
+          base64 -d "$RUNNER_TEMP/manuscript.enc.b64" > "$RUNNER_TEMP/manuscript.enc"
+          base64 -d pangram_payload2/key.enc.b64 > "$RUNNER_TEMP/key.enc"
+          openssl pkeyutl -decrypt -inkey .pangram-key/private.pem -in "$RUNNER_TEMP/key.enc" -out "$RUNNER_TEMP/key.hex"
+          openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$RUNNER_TEMP/key.hex" -in "$RUNNER_TEMP/manuscript.enc" -out "$RUNNER_TEMP/manuscript.txt.gz"
+          gzip -dc "$RUNNER_TEMP/manuscript.txt.gz" > "$RUNNER_TEMP/manuscript.txt"
+          chmod 600 "$RUNNER_TEMP/manuscript.txt" "$RUNNER_TEMP/key.hex"
+
+      - name: Install local inference runtime
+        if: ${{ hashFiles('pangram_payload2/manuscript.enc.b64.part00') != '' && hashFiles('pangram_payload2/key.enc.b64') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          npm init -y >/dev/null 2>&1
+          npm install --silent @huggingface/transformers
+
+      - name: Run Pangram-derived EditLens detector
+        if: ${{ hashFiles('pangram_payload2/manuscript.enc.b64.part00') != '' && hashFiles('pangram_payload2/key.enc.b64') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/run-editlens.mjs" <<'JS'
+          import fs from 'node:fs';
+          import { pipeline } from '@huggingface/transformers';
+          const text = fs.readFileSync(process.env.RUNNER_TEMP + '/manuscript.txt','utf8');
+          const words = text.replace(/\s+/g,' ').trim().split(' ');
+          const chunkWords = 260, overlap = 30;
+          const chunks=[];
+          for(let start=0; start<words.length; start += (chunkWords-overlap)){
+            const end=Math.min(words.length,start+chunkWords);
+            const chunk=words.slice(start,end).join(' ');
+            if(chunk.split(' ').length>=50) chunks.push({start,end,chunk});
+            if(end===words.length) break;
+          }
+          const classifier=await pipeline('text-classification','benreeve/editlens-roberta-large-onnx-int8',{device:'cpu',model_file_name:'model_quantized'});
+          const names=['Human-written','Lightly AI-edited','Heavily AI-edited','Fully AI-generated'];
+          const rows=[];
+          for(let i=0;i<chunks.length;i++){
+            const c=chunks[i];
+            const raw=await classifier(c.chunk,{top_k:null,truncation:true,max_length:512});
+            const arr=Array.isArray(raw[0])?raw[0]:raw;
+            const probs=[0,0,0,0];
+            for(const item of arr){const m=String(item.label).match(/(?:LABEL_)?(\d+)/); if(m) probs[Number(m[1])]=Number(item.score);}
+            const sum=probs.reduce((a,b)=>a+b,0); if(!(sum>0)) throw new Error('Could not parse model probabilities: '+JSON.stringify(raw));
+            for(let j=0;j<4;j++) probs[j]/=sum;
+            const score=(probs[1]+2*probs[2]+3*probs[3])/3;
+            const argmax=probs.indexOf(Math.max(...probs));
+            rows.push({chunk:i+1,start_word:c.start+1,end_word:c.end,score,most_likely:names[argmax],probs});
+          }
+          const weights=rows.map(r=>r.end_word-r.start_word+1), totalW=weights.reduce((a,b)=>a+b,0);
+          const mean=rows.reduce((s,r,i)=>s+r.score*weights[i],0)/totalW;
+          const sorted=rows.map(r=>r.score).sort((a,b)=>a-b);
+          const median=sorted.length%2?sorted[(sorted.length-1)/2]:(sorted[sorted.length/2-1]+sorted[sorted.length/2])/2;
+          const bucketCounts=Object.fromEntries(names.map(n=>[n,rows.filter(r=>r.most_likely===n).length]));
+          console.log('---EDITLENS-RESULT-BEGIN---');
+          console.log(JSON.stringify({model:'benreeve/editlens-roberta-large-onnx-int8',upstream:'pangram/editlens_roberta-large',manuscript_words:words.length,chunk_words:chunkWords,overlap_words:overlap,chunks:rows.length,weighted_mean_ai_editing_score:mean,median_chunk_score:median,min_chunk_score:Math.min(...rows.map(r=>r.score)),max_chunk_score:Math.max(...rows.map(r=>r.score)),most_likely_bucket_counts:bucketCounts,per_chunk:rows},null,2));
+          console.log('---EDITLENS-RESULT-END---');
+          JS
+          cd "$RUNNER_TEMP"
+          node run-editlens.mjs
+
+      - name: Wipe plaintext
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/manuscript.txt" "$RUNNER_TEMP/manuscript.txt.gz" "$RUNNER_TEMP/key.hex" "$RUNNER_TEMP/manuscript.enc" "$RUNNER_TEMP/manuscript.enc.b64" "$RUNNER_TEMP/key.enc" || true
